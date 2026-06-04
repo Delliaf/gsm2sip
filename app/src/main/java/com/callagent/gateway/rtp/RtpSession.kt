@@ -109,7 +109,7 @@ class RtpSession(
     // (when decayingPlaybackRms <= echoGateThreshold) to avoid false resets
     // from incall_music echo leaking back through VOICE_CALL capture.
     private val SILENCE_RMS_THRESHOLD = 10   // Below this = truly dead source (ADC noise floor)
-    private val SILENCE_FRAME_LIMIT = 25     // 25 non-echo frames (~0.5s) — fast fallback for testing
+    private val SILENCE_FRAME_LIMIT = 500    // 500 non-echo frames (~10s) — generous for natural pauses in conversation
 
     var listener: Listener? = null
 
@@ -205,12 +205,11 @@ class RtpSession(
         configs.add(SourceConfig(MediaRecorder.AudioSource.VOICE_RECOGNITION, "VOICE_RECOGNITION", 8000))
         configs.add(SourceConfig(MediaRecorder.AudioSource.MIC, "MIC", 8000))
         configs.add(SourceConfig(MediaRecorder.AudioSource.VOICE_COMMUNICATION, "VOICE_COMMUNICATION", 8000))
-        // VOICE_DOWNLINK (source 3): DEAD LAST — on MSM8930 it initializes
-        // successfully (STATE_INITIALIZED) but captures SILENCE because the
-        // Incall_Rec mixer controls don't exist on this SoC.  If it were
-        // earlier in the list, it would "win" over mic-based sources that
-        // actually work.  Kept only for devices where it genuinely works.
-        if (wideband) {
+        // VOICE_DOWNLINK: only include if profile says it works on this device.
+        // On OnePlus 5 (MSM8998), VOICE_DOWNLINK initializes but causes
+        // Incall_Music mixer reset when AudioRecord.stop() is called,
+        // breaking SIP→GSM playback.  Profile.voiceDownlinkWorks controls this.
+        if (profile.voiceDownlinkWorks) {
             configs.add(SourceConfig(MediaRecorder.AudioSource.VOICE_DOWNLINK, "VOICE_DOWNLINK@16k", 16000))
             configs.add(SourceConfig(MediaRecorder.AudioSource.VOICE_DOWNLINK, "VOICE_DOWNLINK", 8000))
         } else {

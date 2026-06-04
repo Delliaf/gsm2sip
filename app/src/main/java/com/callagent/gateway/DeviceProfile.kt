@@ -208,6 +208,11 @@ data class DeviceProfile(
                 board.contains("msm8930") || hw.contains("qcom") && model.contains("gt-i919") ->
                     msm8930()
 
+                // OnePlus 5/5T (MSM8998 Snapdragon 835 / WCD9335 Tasha codec)
+                board.contains("msm8998") || hw.contains("msm8998") ||
+                    board.contains("oneplus5") || model.contains("oneplus 5") ->
+                    msm8998tasha()
+
                 // Samsung Galaxy S10e Exynos (Exynos 9820)
                 board.contains("exynos9820") || hw.contains("exynos") && model.contains("sm-g970") ->
                     exynos9820()
@@ -322,6 +327,63 @@ data class DeviceProfile(
             incallMusicParam = "incall_music_enabled",
             voiceDownlinkWorks = false,
             routeChangeDelayMs = 700,
+            appopsPropagationMs = 500,
+        )
+
+        /** OnePlus 5/5T (MSM8998 Snapdragon 835 / WCD9335 Tasha codec)
+         *
+         *  Audio HAL: Qualcomm msm8998-tasha-snd-card
+         *  ALSA card 0: msm8998tashasnd — Tasha WCD9335 codec
+         *
+         *  Audio bridge strategy (confirmed via real tinymix diff):
+         *  During a voice call, the telephony HAL automatically sets:
+         *    - Incall_Music Audio Mixer MultiMedia1: On (VOICE_RX path)
+         *    - Incall_Music Audio Mixer MultiMedia2: On (VOICE_RX path)
+         *    - QUAT_MI2S_RX Audio Mixer MultiMedia7: On (AUX output)
+         *    - SLIM_0_TX Channels: Three (stereo + voice)
+         *    - VOC_EXT_EC MUX: QUAT_MI2S_TX (external echo cancellation)
+         *
+         *  SIP→GSM (playback): AudioTrack (USAGE_MEDIA) plays through
+         *  deep-buffer → MultiMedia1. Incall_Music injects it into voice
+         *  TX uplink.  Works automatically with incall_music_enabled HAL param.
+         *
+         *  GSM→SIP (capture): VOICE_CALL AudioRecord works and provides
+         *  digital capture of uplink+downlink (confirmed capRMS=6189).
+         *  The main issue is that fallback to other sources (especially
+         *  VOICE_DOWNLINK) causes AudioRecord.stop() which resets the
+         *  Incall_Music mixer, breaking playback.  Increasing
+         *  SILENCE_FRAME_LIMIT is critical to prevent premature fallback.
+         */
+        fun msm8998tasha() = DeviceProfile(
+            name = "MSM8998 Tasha (OnePlus 5)",
+            // Minimal mixer setup — HAL auto-routes everything during call.
+            // We just need to ensure incall_music is enabled for SIP→GSM.
+            // Note: avoid muting Voice Tx/Rx device controls — they don't
+            // exist on this SoC and may cause errors.
+            mixerSetupCmd = buildString {
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia1' 1 2>/dev/null; ")
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1 2>/dev/null")
+            },
+            mixerRestoreCmd = buildString {
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia1' 0 2>/dev/null; ")
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia2' 0 2>/dev/null")
+            },
+            mixerIncallMusicCmd = buildString {
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia1' 1 2>/dev/null; ")
+                append("tinymix 'Incall_Music Audio Mixer MultiMedia2' 1 2>/dev/null; ")
+                append("tinymix 'Voice Tx Mute' 0 2>/dev/null")
+            },
+            mixerDiagGrep = "tinymix 2>&1 | grep -iE '(Incall_Music|VOC_REC|VoiceMMode|SLIM.*TX|QUAT.*RX|SLIM.*RX)'",
+            musicVolPercent = 20,       // STREAM_MUSIC volume for incall injection
+            captureGain = 2,            // Small boost for VOICE_CALL digital capture (capRMS=6189 is plenty)
+            playbackGain = 2,
+            noiseGateThreshold = 500,   // Slightly higher than generic — raw capture has DSP noise floor
+            echoGateThreshold = 300,
+            doubleTalkRatio = 1.5f,
+            requireSpeakerMode = true,   // Handsfree/speaker needed for incall_music routing
+            incallMusicParam = "incall_music_enabled",
+            voiceDownlinkWorks = false,  // VOICE_DOWNLINK breaks Incall_Music on this SoC
+            routeChangeDelayMs = 500,
             appopsPropagationMs = 500,
         )
 
