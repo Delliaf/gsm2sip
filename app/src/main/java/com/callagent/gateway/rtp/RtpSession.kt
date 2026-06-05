@@ -190,6 +190,16 @@ class RtpSession(
         // VOICE_CALL (source 4): captures uplink+downlink mixed digitally.
         // Best option on MSM8930 — if it initializes, it provides clean
         // digital capture of the caller's voice.  Requires CAPTURE_AUDIO_OUTPUT.
+        // VOICE_UPLINK (source 14, defined on Qualcomm as INCALL_REC_UPLINK):
+        // captures only the microphone/GSM uplink path, no downlink from speaker.
+        // On WCD9335 (MSM8998 Tasha) this avoids the loopback where the caller
+        // hears themselves echoed back.
+        // NOTE: Try VOICE_UPLINK FIRST on MSM8998. VOICE_CALL gives UL+DL mix
+        // and On 8998 the caller hears Incall_Music echo but not their own mic.
+        configs.add(SourceConfig(14, "VOICE_UPLINK", 8000))
+        if (wideband) {
+            configs.add(SourceConfig(14, "VOICE_UPLINK@16k", 16000))
+        }
         if (wideband) {
             // G.722: prefer 16kHz native capture — avoids upsampling artifacts
             // in the 4-8kHz upper band that cause AI agent false interruptions.
@@ -468,6 +478,10 @@ class RtpSession(
      *  sources already detected as silent. */
     private fun buildCaptureConfigs(wideband: Boolean): List<SourceConfig> {
         val configs = mutableListOf<SourceConfig>()
+        configs.add(SourceConfig(14, "VOICE_UPLINK", 8000))
+        if (wideband) {
+            configs.add(SourceConfig(14, "VOICE_UPLINK@16k", 16000))
+        }
         if (wideband) {
             configs.add(SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL@16k", 16000))
             configs.add(SourceConfig(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL", 8000))
