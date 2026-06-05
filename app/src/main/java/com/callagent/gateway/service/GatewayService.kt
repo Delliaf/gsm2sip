@@ -260,19 +260,11 @@ class GatewayService : Service() {
         cfgPass = password
 
         notifStatusText = "Connecting"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(NotifState.WARN, "Connecting"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(NotifState.WARN, "Connecting")
-            )
-        }
+        startForeground(
+            NOTIFICATION_ID,
+            buildNotification(NotifState.WARN, "Connecting"),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+        )
         acquireLocks()
         initializing.set(true)
 

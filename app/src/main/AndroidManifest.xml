@@ -107,7 +107,7 @@
         <!-- Gateway foreground service: keeps SIP registered 24/7 -->
         <service
             android:name=".service.GatewayService"
-            android:foregroundServiceType="phoneCall|microphone"
+            android:foregroundServiceType="phoneCall"
             android:exported="false" />
 
         <!-- Auto-start on boot -->
