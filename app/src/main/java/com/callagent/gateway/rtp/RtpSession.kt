@@ -496,7 +496,8 @@ class RtpSession(
         // If profile has preferredCaptureSource, try it first
         val preferredSource = profile.preferredCaptureSource
         if (preferredSource >= 0) {
-            configs.add(SourceConfig(preferredSource, "src=$preferredSource", 8000))
+            Log.i(TAG, "buildCaptureConfigs: preferredCaptureSource=$preferredSource")
+            configs.add(SourceConfig(preferredSource, "src=$preferredSource(PREFERRED)", 8000))
         }
         configs.add(SourceConfig(14, "VOICE_UPLINK", 8000))
         if (wideband) {
@@ -649,9 +650,9 @@ class RtpSession(
         val record = audioRecord ?: return false
 
         record.startRecording()
-        Log.i(TAG, "Capture started: source=$audioSourceName capRate=$captureRate session=$audioSessionId gain=${captureGain}x profile=${profile.name} state=${record.recordingState}")
+        Log.i(TAG, "Capture started: source=$audioSourceName capRate=$captureRate session=$audioSessionId gain=${captureGain}x profile=${profile.name} state=${record.recordingState} preferred=${profile.preferredCaptureSource}")
         // Also report via RTP stats so it appears in the app log viewer
-        listener?.onRtpStats("Capture: source=$audioSourceName rate=$captureRate gain=${captureGain}x profile=${profile.name}")
+        listener?.onRtpStats("Capture: source=${audioSourceName}($currentSourceId) rate=$captureRate gain=${captureGain}x profile=${profile.name} preferredCaptureSource=${profile.preferredCaptureSource}")
 
         // Buffer: 20ms of PCM at the actual capture sample rate
         val samplesPerFrame = captureRate / 50  // 160 @ 8kHz, 320 @ 16kHz
