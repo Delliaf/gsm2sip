@@ -1,40 +1,46 @@
-name: Build APK + Magisk Module
+name: Build
 
 on:
   push:
-    branches: [oneplus5-support]
-  pull_request:
-    branches: [main]
+    branches: [main, oneplus5-support]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-
-    - name: Set up Android SDK
-      uses: android-actions/setup-android@v3
-
-    - name: Accept Android SDK licenses
-      run: |
-        yes | $ANDROID_HOME/tools/bin/sdkmanager --licenses || true
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-
-    - name: Build debug APK + Magisk module
-      run: |
-        chmod +x build.sh
-        ./build.sh
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: gateway-magisk-debug
-        path: gateway-magisk.zip
+      - uses: actions/checkout@v4
+      
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Make build script executable
+        run: chmod +x build.sh
+      
+      - name: Build APK and Magisk Module
+        run: ./build.sh
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME || env.ANDROID_SDK_ROOT }}
+      
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-apk
+          path: gateway.apk
+          if-no-files-found: warn
+      
+      - name: Upload Magisk Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-magisk-module
+          path: gateway-magisk.zip
+          if-no-files-found: warn
