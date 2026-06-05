@@ -378,7 +378,10 @@ data class DeviceProfile(
             captureGain = 2,            // Small boost for VOICE_CALL digital capture (capRMS=6189 is plenty)
             playbackGain = 2,
             noiseGateThreshold = 500,   // Slightly higher than generic — raw capture has DSP noise floor
-            echoGateThreshold = 300,
+            echoGateThreshold = Int.MAX_VALUE,  // DISABLE echo gate: Incall_Music injects digitally,
+                                                // VOICE_CALL captures UL+DL mix, gate would mute caller
+                                                // whenever agent speaks — caller hears nothing.
+                                                // No acoustic echo path on this device, gate is harmful.
             doubleTalkRatio = 1.5f,
             requireSpeakerMode = true,   // Handsfree/speaker needed for incall_music routing
             incallMusicParam = "incall_music_enabled",
