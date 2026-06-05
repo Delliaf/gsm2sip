@@ -4,9 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.telecom.Call
 import android.telecom.CallAudioState
 import android.telecom.InCallService
+import android.telecom.TelecomManager
 import android.util.Log
 import com.callagent.gateway.DeviceProfile
 import com.callagent.gateway.RootShell
@@ -161,9 +163,25 @@ object GsmCallManager {
     /** Place outgoing GSM call via the SIM */
     fun makeCall(context: Context, destination: String) {
         Log.i(TAG, "Making GSM call to $destination")
-        val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$destination"))
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        val uri = Uri.parse("tel:$destination")
+        val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && telecomManager != null) {
+            // TelecomManager.placeCall works from background on Android 10+.
+            // No FLAG_ACTIVITY_NEW_TASK needed — it's a service API, not an Activity one.
+            val extras = android.os.Bundle()
+            // Prevent dialer UI from popping up — we're a gateway,
+            // the InCallService handles everything.
+            extras.putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, true)
+            telecomManager.placeCall(uri, extras)
+            appLog("Placed GSM call via TelecomManager: $destination")
+        } else {
+            // Fallback for older Android: use ACTION_CALL intent
+            val intent = Intent(Intent.ACTION_CALL, uri)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            appLog("Placed GSM call via ACTION_CALL: $destination")
+        }
     }
 
     /** Music volume percent — from device profile. */
