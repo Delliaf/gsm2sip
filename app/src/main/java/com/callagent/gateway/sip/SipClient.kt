@@ -302,8 +302,13 @@ class SipClient(
                 uiLog("REGISTER ${msg.statusCode} challenge, sending auth")
                 val authParams = SipAuth.parseChallenge(msg)
                 if (authParams != null) {
+                    val useProxy = msg.statusCode == 407
                     val uri = "sip:$serverDomain:$serverPort"
-                    val auth = SipAuth.buildAuthHeader("REGISTER", uri, username, password, authParams)
+                    val auth = if (useProxy) {
+                        SipAuth.buildProxyAuthHeader("REGISTER", uri, username, password, authParams)
+                    } else {
+                        SipAuth.buildAuthHeader("REGISTER", uri, username, password, authParams)
+                    }
                     sendRegister(auth)
                 } else {
                     uiLog("Failed to parse auth challenge")
