@@ -83,6 +83,14 @@ data class DeviceProfile(
      *  -1 = use USAGE_MEDIA (default). */
     val playbackUsage: Int = -1,
 
+    /** Preferred capture AudioSource for this device.
+     *  -1 = use default priority list (VOICE_UPLINK > VOICE_CALL > ...).
+     *  0+ = specific MediaRecorder.AudioSource constant to try first.
+     *  Used when a device needs a specific source that works with its HAL.
+     *  OnePlus 5 (MSM8998 Tasha): VOICE_CALL gives rawCapRMS=0 with
+     *  incall_music active. VOICE_RECOGNITION (1) captures physical mic. */
+    val preferredCaptureSource: Int = -1,
+
     // ── Timing ──
 
     /** Delay (ms) after speaker route change before mixer setup. */
@@ -388,6 +396,7 @@ data class DeviceProfile(
             voiceDownlinkWorks = false,  // VOICE_DOWNLINK breaks Incall_Music on this SoC
             routeChangeDelayMs = 500,
             appopsPropagationMs = 500,
+            preferredCaptureSource = MediaRecorder.AudioSource.VOICE_RECOGNITION,  // VOICE_CALL=0, VOICE_RECOGNITION=1 captures physical mic
         )
 
         /** Samsung Galaxy S10e (Exynos 9820 / Cirrus Logic CS47L93 Madera codec)

@@ -196,6 +196,21 @@ class RtpSession(
         // hears themselves echoed back.
         // NOTE: Try VOICE_UPLINK FIRST on MSM8998. VOICE_CALL gives UL+DL mix
         // and On 8998 the caller hears Incall_Music echo but not their own mic.
+        // If profile has preferredCaptureSource, put it first.
+        val preferredSource = profile.preferredCaptureSource
+        if (preferredSource >= 0) {
+            val srcName = when (preferredSource) {
+                14 -> "VOICE_UPLINK"
+                MediaRecorder.AudioSource.VOICE_CALL -> "VOICE_CALL"
+                MediaRecorder.AudioSource.VOICE_RECOGNITION -> "VOICE_RECOGNITION"
+                MediaRecorder.AudioSource.MIC -> "MIC"
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "VOICE_COMMUNICATION"
+                MediaRecorder.AudioSource.VOICE_DOWNLINK -> "VOICE_DOWNLINK"
+                else -> "src=$preferredSource"
+            }
+            configs.add(SourceConfig(preferredSource, "${srcName}@16k", 16000))
+            configs.add(SourceConfig(preferredSource, srcName, 8000))
+        }
         configs.add(SourceConfig(14, "VOICE_UPLINK", 8000))
         if (wideband) {
             configs.add(SourceConfig(14, "VOICE_UPLINK@16k", 16000))
@@ -478,6 +493,11 @@ class RtpSession(
      *  sources already detected as silent. */
     private fun buildCaptureConfigs(wideband: Boolean): List<SourceConfig> {
         val configs = mutableListOf<SourceConfig>()
+        // If profile has preferredCaptureSource, try it first
+        val preferredSource = profile.preferredCaptureSource
+        if (preferredSource >= 0) {
+            configs.add(SourceConfig(preferredSource, "src=$preferredSource", 8000))
+        }
         configs.add(SourceConfig(14, "VOICE_UPLINK", 8000))
         if (wideband) {
             configs.add(SourceConfig(14, "VOICE_UPLINK@16k", 16000))
