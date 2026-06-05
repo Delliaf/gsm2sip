@@ -14,7 +14,9 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import com.callagent.gateway.BuildConfig
@@ -36,6 +38,10 @@ import kotlin.concurrent.thread
  *
  * Holds a WiFi lock and wake lock to prevent the device from
  * sleeping and dropping the SIP registration.
+ *
+ * OxygenOS compatibility: runs with foregroundServiceType="phoneCall"
+ * only (no microphone type — OxygenOS kills services with that type).
+ * RECORD_AUDIO is granted via root appops instead.
  */
 class GatewayService : Service() {
 
@@ -64,6 +70,10 @@ class GatewayService : Service() {
     /** Prevents concurrent startGateway / reconnect threads */
     private val initializing = AtomicBoolean(false)
 
+    // ── Heartbeat ───────────────────────────────────────
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var heartbeatCount = 0L
+
     // ── Network change detection ────────────────────────
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -76,9 +86,6 @@ class GatewayService : Service() {
             }
             override fun onLost(network: Network) {
                 Log.i(TAG, "Network lost")
-                // During an active GSM call, cellular data goes SUSPENDED which
-                // fires onLost.  This is normal Android behavior — do NOT tear
-                // down the bridge.  WiFi still carries SIP/RTP traffic.
                 val busy = orchestrator?.bridgeState?.let {
                     it != CallOrchestrator.BridgeState.IDLE
                 } ?: false
@@ -114,11 +121,8 @@ class GatewayService : Service() {
     }
 
     private fun checkNetworkChanged() {
-        // Skip if no prior IP (first start handles its own init)
         if (currentLocalIp.isEmpty()) return
         if (cfgServer.isEmpty()) return
-        // During an active call, skip network checks — cellular SUSPENDED
-        // is normal and WiFi handles SIP/RTP traffic.
         val busy = orchestrator?.bridgeState?.let {
             it != CallOrchestrator.BridgeState.IDLE
         } ?: false
@@ -145,7 +149,6 @@ class GatewayService : Service() {
         broadcastStatus("STARTING", "Reconnecting...")
         updateNotification(NotifState.WARN, "Connecting")
 
-        // Tear down existing client
         orchestrator?.stop()
         sipClient?.stop()
         orchestrator = null
@@ -164,21 +167,113 @@ class GatewayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "GatewayService created")
         createNotificationChannel()
         registerNetworkCallback()
         RootShell.init()
-        Log.i(TAG, "GatewayService created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand: action=${intent?.action ?: "null"} flags=$flags startId=$startId")
+
+        // ALWAYS start foreground immediately — before any logic.
+        // This prevents ANR / ServiceNotStartedException on Android 10+,
+        // and ensures OxygenOS sees us as a persistent foreground service
+        // as early as possible.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(NotifState.WARN, "Starting..."),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground failed (already started?): ${e.message}")
+            }
+        } else {
+            try {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(NotifState.WARN, "Starting...")
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground failed (already started?): ${e.message}")
+            }
+        }
+
         when (intent?.action) {
             ACTION_START -> startGateway(intent)
             ACTION_STOP -> stopGateway()
             ACTION_RELOAD_STATS -> reloadStats()
             ACTION_DIAL -> dialFromDialler(intent)
-            else -> startGateway(intent)
+            else -> {
+                // START_STICKY restart with null intent — restore from prefs
+                if (intent == null && !stopped && sipClient == null) {
+                    Log.i(TAG, "START_STICKY restart detected, restoring gateway")
+                    val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
+                    val server = prefs.getString("server", "") ?: ""
+                    val user = prefs.getString("user", "") ?: ""
+                    if (server.isNotEmpty() && user.isNotEmpty()) {
+                        broadcastLog("Restoring gateway after restart...")
+                        startGateway(null)
+                    } else {
+                        Log.w(TAG, "START_STICKY: no saved config, staying alive but idle")
+                    }
+                }
+                // else: already running, heartbeat will tell us we're alive
+            }
         }
         return START_STICKY
+    }
+
+    /**
+     * Called when the user swipes the app from recents.
+     * OxygenOS also calls this aggressively.
+     * Log it for diagnostics.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.w(TAG, "⚡ onTaskRemoved — user swiped app from recents!")
+        broadcastLog("⚡ ALERT: onTaskRemoved — app removed from recents")
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * Called when Android is low on memory or trimming our process.
+     * Logs TRIM_LEVEL so we can see what OxygenOS is doing.
+     */
+    override fun onTrimMemory(level: Int) {
+        val levelName = when (level) {
+            TRIM_MEMORY_COMPLETE -> "TRIM_MEMORY_COMPLETE"
+            TRIM_MEMORY_MODERATE -> "TRIM_MEMORY_MODERATE"
+            TRIM_MEMORY_BACKGROUND -> "TRIM_MEMORY_BACKGROUND"
+            TRIM_MEMORY_UI_HIDDEN -> "TRIM_MEMORY_UI_HIDDEN"
+            TRIM_MEMORY_RUNNING_CRITICAL -> "TRIM_MEMORY_RUNNING_CRITICAL"
+            TRIM_MEMORY_RUNNING_LOW -> "TRIM_MEMORY_RUNNING_LOW"
+            TRIM_MEMORY_RUNNING_MODERATE -> "TRIM_MEMORY_RUNNING_MODERATE"
+            else -> "TRIM_LEVEL_$level"
+        }
+        Log.w(TAG, "⚡ onTrimMemory: $levelName")
+        broadcastLog("⚡ Mem: $levelName")
+        super.onTrimMemory(level)
+    }
+
+    private fun startHeartbeat() {
+        heartbeatCount = 0L
+        mainHandler.post(object : Runnable {
+            override fun run() {
+                if (stopped) return
+                heartbeatCount++
+                val sipOk = sipClient?.registered == true
+                val alive = sipClient != null && orchestrator != null
+                val threadAlive = Thread.activeCount()
+                Log.i(TAG, "♥ Heartbeat #$heartbeatCount: alive=$alive sip=$sipOk threads=$threadAlive mem=${
+                    Runtime.getRuntime().totalMemory() / 1024 / 1024}M")
+                if (heartbeatCount % 4 == 0L) { // every 60s
+                    broadcastLog("♥ Heartbeat #$heartbeatCount: sip=$sipOk threads=$threadAlive")
+                }
+                mainHandler.postDelayed(this, 15_000L)
+            }
+        })
     }
 
     private fun dialFromDialler(intent: Intent?) {
@@ -197,14 +292,9 @@ class GatewayService : Service() {
     }
 
     private fun startGateway(intent: Intent?) {
-        // Guard: if the gateway is already running (SIP client exists and
-        // we're not in stopped state), don't tear it down and restart.
-        // This prevents redundant ACTION_START intents (e.g. from the
-        // Activity opening, START_STICKY restart, or BootReceiver) from
-        // killing an active SIP registration or call bridge.
+        // Guard: if already running, skip
         if (!stopped && sipClient != null) {
             Log.i(TAG, "startGateway: already running, skipping restart")
-            // Broadcast current state so the Activity picks up the live status
             val state = orchestrator?.bridgeState ?: CallOrchestrator.BridgeState.IDLE
             val registered = sipClient?.registered == true
             val info = when (state) {
@@ -223,7 +313,7 @@ class GatewayService : Service() {
         sipClient = null
         stopped = false
 
-        // Load call stats from persistent store so counters survive restarts
+        // Load call stats
         onlineSince = 0L
         val totals = CallLogStore.getTotals(this)
         incomingCalls = totals.inCalls
@@ -242,7 +332,8 @@ class GatewayService : Service() {
             Log.e(TAG, "Missing SIP configuration")
             broadcastLog("ERROR: Missing server or username")
             broadcastStatus("ERROR", "Missing SIP configuration")
-            stopSelf()
+            // Don't stopSelf — stay alive as foreground service
+            // so user can configure via UI
             return
         }
 
@@ -260,20 +351,17 @@ class GatewayService : Service() {
         cfgPass = password
 
         notifStatusText = "Connecting"
-        startForeground(
-            NOTIFICATION_ID,
-            buildNotification(NotifState.WARN, "Connecting"),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-        )
+        // startForeground already called in onStartCommand, just update the notification
+        updateNotification(NotifState.WARN, "Connecting")
         acquireLocks()
+
+        // Start heartbeat after locks are acquired
+        startHeartbeat()
+
         initializing.set(true)
 
-        // Run network I/O off the main thread (Android blocks sockets on main thread)
         thread(name = "gateway-init") {
             try {
-                // Force-allow RECORD_AUDIO BEFORE SIP registration.
-                // Magisk su takes 4+ seconds on first invocation (root server
-                // startup).  Must complete before any calls can arrive.
                 forceAllowRecordAudio()
                 initSipClient()
             } finally {
@@ -288,7 +376,6 @@ class GatewayService : Service() {
         currentLocalIp = localIp
         broadcastLog("Local IP: $localIp")
 
-        // STUN: discover public IP for NAT traversal
         val stunResult = try { StunClient.discover() } catch (e: Exception) {
             Log.e(TAG, "STUN exception: ${e.javaClass.simpleName}: ${e.message}")
             null
@@ -319,14 +406,12 @@ class GatewayService : Service() {
                 Log.i(TAG, "Bridge: $state - $info")
                 val registered = sip.registered
 
-                // Track online time
                 if (registered && onlineSince == 0L) {
                     onlineSince = System.currentTimeMillis()
                 } else if (!registered && state == CallOrchestrator.BridgeState.IDLE) {
                     onlineSince = 0L
                 }
 
-                // Track call direction and number
                 when (state) {
                     CallOrchestrator.BridgeState.GSM_RINGING -> {
                         currentCallIncoming = true
@@ -339,7 +424,6 @@ class GatewayService : Service() {
                     else -> {}
                 }
 
-                // Track call start / end
                 if (state == CallOrchestrator.BridgeState.BRIDGED && currentCallStart == 0L) {
                     currentCallStart = System.currentTimeMillis()
                     if (currentCallIncoming) incomingCalls++ else outgoingCalls++
@@ -358,7 +442,6 @@ class GatewayService : Service() {
                     currentCallNumber = ""
                 }
 
-                // Map bridge state to notification status text
                 val (notifState, statusText) = when (state) {
                     CallOrchestrator.BridgeState.IDLE ->
                         if (registered) NotifState.OK to "Connected"
@@ -414,6 +497,7 @@ class GatewayService : Service() {
         stopped = true
         onlineSince = 0L
         Log.i(TAG, "Stopping gateway")
+        mainHandler.removeCallbacksAndMessages(null) // stop heartbeat
         orchestrator?.stop()
         sipClient?.stop()
         orchestrator = null
@@ -425,7 +509,15 @@ class GatewayService : Service() {
     }
 
     override fun onDestroy() {
+        Log.w(TAG, "⚡ GatewayService onDestroy — reason: timeout / kill / restart")
+        broadcastLog("⚡ ALERT: GatewayService onDestroy")
         unregisterNetworkCallback()
+        if (!stopped) {
+            Log.w(TAG, "⚡ onDestroy without stopGateway — saving state for restart")
+            // Save that we were unexpectedly killed
+            val prefs = getSharedPreferences("gateway", MODE_PRIVATE)
+            prefs.edit().putBoolean("was_unexpected_kill", true).apply()
+        }
         stopGateway()
         super.onDestroy()
     }
@@ -447,7 +539,6 @@ class GatewayService : Service() {
 
     private enum class NotifState { OK, WARN, ERROR }
 
-    /** Current notification status text, kept in sync with bridge/SIP state. */
     private var notifStatusText = "Connecting"
 
     private fun buildNotification(state: NotifState = NotifState.ERROR, statusText: String = notifStatusText): Notification {
@@ -467,6 +558,7 @@ class GatewayService : Service() {
             .setContentIntent(pi)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
+            .setShowWhen(true)
             .build()
             .apply { flags = flags or Notification.FLAG_NO_CLEAR }
     }
@@ -516,7 +608,6 @@ class GatewayService : Service() {
     }
 
     private fun broadcastLog(msg: String) {
-        // Buffer for replay when activity resumes (receiver is only active in foreground)
         synchronized(logBuffer) {
             logBuffer.add(msg)
             if (logBuffer.size > LOG_BUFFER_SIZE) logBuffer.removeAt(0)
@@ -552,34 +643,10 @@ class GatewayService : Service() {
 
     /**
      * Force-allow RECORD_AUDIO via appops using root (Magisk).
-     *
-     * Android's AppOpsService can revoke RECORD_AUDIO (app op 27) for
-     * background apps even when runtime permission is granted.  On the
-     * second call the screen is off and the system may deny AudioRecord.
-     *
-     * Called SYNCHRONOUSLY on the gateway-init thread BEFORE initSipClient().
-     * This ensures the appops command completes before SIP registration,
-     * so no incoming calls can arrive while it's still pending.
-     *
-     * On cold boot, the appops service is NOT available for ~45-60 seconds
-     * after the kernel starts.  This method BLOCKS until the service appears,
-     * intentionally delaying SIP registration.  No calls can arrive until
-     * both appops is verified AND SIP is registered.
-     *
-     * CRITICAL: Must use --uid flag to set the UID-level mode.
-     * `appops set <pkg>` sets the package mode, but AudioFlinger checks
-     * the UID mode (set by PermissionController).  UID mode overrides
-     * package mode, so without --uid the allow is ineffective on cold boot.
      */
     private fun forceAllowRecordAudio() {
         try {
             val pkg = packageName
-
-            // Wait for appops service to become available (cold boot).
-            // Blocking here is intentional — initSipClient() must not run
-            // until appops is set, because SIP registration makes us
-            // reachable for incoming calls and AudioRecord will be denied
-            // without the permission.  Polls every 3s for up to 90s.
             val maxWaitMs = 90_000L
             val pollMs = 3_000L
             val waitStart = System.currentTimeMillis()
@@ -642,10 +709,8 @@ class GatewayService : Service() {
     companion object {
         private const val TAG = "GatewayService"
         private const val LOG_BUFFER_SIZE = 200
-        /** Ring buffer of recent log messages — survives activity pause/resume. */
         val logBuffer = mutableListOf<String>()
 
-        /** Drain buffered logs.  Returns all messages and clears the buffer. */
         fun drainLogBuffer(): List<String> = synchronized(logBuffer) {
             val copy = logBuffer.toList()
             logBuffer.clear()
